@@ -11,6 +11,7 @@ import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Component;
 
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
 
 /**
  * 单切片异步处理任务 — 写磁盘 + 写 DB + SSE 通知
@@ -32,7 +33,7 @@ public class ChunkProcessTask {
      * @param totalChunks 切片总数（用于进度计算）
      */
     @Async("chunkExecutor")
-    public void process(String fileId, int chunkIndex, byte[] chunkData, int totalChunks) {
+    public CompletableFuture<Void> process(String fileId, int chunkIndex, byte[] chunkData, int totalChunks) {
         String chunkId = UUID.randomUUID().toString();
         log.info("开始处理切片: fileId={}, chunkIndex={}, chunkId={}", fileId, chunkIndex, chunkId);
 
@@ -65,6 +66,8 @@ public class ChunkProcessTask {
             sseRegistry.send(fileId, event);
             log.info("SSE 推送完成: chunkIndex={}", chunkIndex);
 
+            return CompletableFuture.completedFuture(null);
+
         } catch (Exception e) {
             log.error("切片处理失败: fileId={}, chunkIndex={}", fileId, chunkIndex, e);
 
@@ -91,6 +94,8 @@ public class ChunkProcessTask {
                     .message("切片 " + chunkIndex + " 处理失败: " + e.getMessage())
                     .build();
             sseRegistry.sendError(fileId, event);
+
+            return CompletableFuture.completedFuture(null);
         }
     }
 }

@@ -78,14 +78,13 @@ public class FileServiceImpl implements FileService {
         List<byte[]> chunks = fileChunker.split(fileBytes, TOTAL_CHUNKS);
         log.info("切片完成: fileId={}, chunkCount={}", fileId, chunks.size());
 
-        // 2. 提交 10 个切片任务并行处理
-        CompletableFuture<?>[] futures = new CompletableFuture[TOTAL_CHUNKS];
+        // 2. 提交 10 个切片任务并行处理（@Async 自动提交到 chunkExecutor）
+        @SuppressWarnings("unchecked")
+        CompletableFuture<Void>[] futures = new CompletableFuture[TOTAL_CHUNKS];
         for (int i = 0; i < TOTAL_CHUNKS; i++) {
             final int chunkIndex = i;
-            futures[i] = CompletableFuture.runAsync(
-                    () -> chunkProcessTask.process(fileId, chunkIndex, chunks.get(chunkIndex), TOTAL_CHUNKS),
-                    Runnable::run // 复用 chunkExecutor
-            );
+            futures[i] = chunkProcessTask.process(
+                    fileId, chunkIndex, chunks.get(chunkIndex), TOTAL_CHUNKS);
         }
 
         // 3. 等待全部完成

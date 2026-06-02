@@ -1,0 +1,58 @@
+spring:
+  application:
+    name: async-file-processor
+  
+  # 数据库配置
+  datasource:
+    url: jdbc:mysql://localhost:3306/afp_db?useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
+    username: root
+    password: your_password
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    # HikariCP 连接池配置
+    hikari:
+      maximum-pool-size: 20
+      minimum-idle: 5
+      connection-timeout: 30000
+      idle-timeout: 600000
+  
+  # JPA配置
+  jpa:
+    database-platform: org.hibernate.dialect.MySQL8Dialect
+    hibernate:
+      ddl-auto: update  # 开发时用update，生产环境用validate
+    show-sql: true
+    properties:
+      hibernate:
+        format_sql: true
+        use_sql_comments: true
+
+# 服务器配置
+server:
+  port: 8080
+  servlet:
+    multipart:
+      max-file-size: 2GB      # 允许上传最大文件
+      max-request-size: 2GB   # 允许请求最大大小
+
+# 自定义配置（你的项目专用）
+afp:
+  chunk:
+    count: 10                   # 固定切片数量
+  thread:
+    core-pool-size: 4           # 核心线程数
+    max-pool-size: 8            # 最大线程数
+    queue-capacity: 100        # 队列容量
+  storage:
+    temp-dir: ./storage/uploaded   # 临时文件存储目录
+    chunk-dir: ./storage/chunks    # 切片临时目录
+  retry:
+    max-attempts: 3            # 最大重试次数
+    initial-delay-ms: 1000     # 初始重试延迟
+    max-delay-ms: 30000        # 最大重试延迟
+
+# 日志配置
+logging:
+  level:
+    com.afp: DEBUG
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss} - %msg%n"

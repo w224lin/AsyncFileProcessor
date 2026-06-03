@@ -26,13 +26,15 @@ spring:
         format_sql: true
         use_sql_comments: true
 
-# 服务器配置
-server:
-  port: 8080
+  # 文件上传配置
   servlet:
     multipart:
       max-file-size: 2GB      # 允许上传最大文件
       max-request-size: 2GB   # 允许请求最大大小
+
+# 服务器配置
+server:
+  port: 8080
 
 # 自定义配置（你的项目专用）
 afp:

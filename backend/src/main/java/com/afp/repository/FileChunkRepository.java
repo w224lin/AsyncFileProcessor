@@ -27,6 +27,13 @@ public interface FileChunkRepository extends JpaRepository<FileChunk, Long> {
      */
     List<FileChunk> findByFileId(String fileId);
 
+    long countByFileIdAndStatus(String fileId, ChunkStatus status);
+
+    /**
+     * 查找某文件的所有切片，按切片序号升序
+     */
+    List<FileChunk> findByFileIdOrderByChunkIndexAsc(String fileId);
+
     /**
      * 更新切片状态
      */

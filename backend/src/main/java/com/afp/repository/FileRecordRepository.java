@@ -17,6 +17,9 @@ public interface FileRecordRepository extends JpaRepository<FileRecord, Long> {
      */
     Optional<FileRecord> findByFileId(String fileId);
 
+    // ✅ 新增：根据 MD5 查询文件（用于秒传去重）
+    Optional<FileRecord> findByFileMd5(String fileMd5);
+
     /**
      * 根据用户ID查找所有文件
      */

@@ -1,9 +1,6 @@
 package com.afp.service.impl;
 
-import com.afp.chunker.FileChunker;
-import com.afp.async.ChunkProcessTask;
-import com.afp.async.SseEmitterRegistry;
-import com.afp.model.dto.ChunkProgressEvent;
+import com.afp.async.FileAsyncProcessor;
 import com.afp.model.dto.UploadResponse;
 import com.afp.model.entity.FileRecord;
 import com.afp.model.enums.FileStatus;
@@ -12,15 +9,17 @@ import com.afp.service.FileService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 
-import java.util.List;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.HexFormat;
+import java.util.Optional;
 import java.util.UUID;
-import java.util.concurrent.CompletableFuture;
 
 /**
  * 文件服务实现
+ * 支持 MD5 去重 + 秒传功能
  */
 @Slf4j
 @Service
@@ -30,88 +29,81 @@ public class FileServiceImpl implements FileService {
     private static final int TOTAL_CHUNKS = 10;
 
     private final FileRecordRepository fileRecordRepository;
-    private final FileChunker fileChunker;
-    private final ChunkProcessTask chunkProcessTask;
-    private final SseEmitterRegistry sseRegistry;
+    private final FileAsyncProcessor asyncProcessor;
 
     @Value("${afp.storage.chunk-dir}")
     private String chunkDir;
 
     @Override
     public UploadResponse upload(String userId, String fileName, byte[] fileBytes) {
-        String fileId = UUID.randomUUID().toString();
         long fileSize = fileBytes.length;
+        
+        // 1. 计算文件级 MD5
+        String fileMd5 = calcMd5(fileBytes);
+        log.info("计算文件 MD5: {}", fileMd5);
 
-        // 1. 创建文件记录（状态 = PROCESSING）
+        // 2. 检查是否已存在相同 MD5 的文件（秒传）
+        Optional<FileRecord> existingRecord = fileRecordRepository.findByFileMd5(fileMd5);
+        
+        if (existingRecord.isPresent()) {
+            FileRecord existing = existingRecord.get();
+            log.info("✅ 秒传命中！文件已存在: fileId={}, fileName={}, userId={}", 
+                    existing.getFileId(), existing.getFileName(), existing.getUserId());
+            
+            // 即使文件已存在，也记录一下是谁在什么时间上传的（可选）
+            // 这里只返回已有文件的信息，不创建新记录
+            
+            return UploadResponse.builder()
+                    .fileId(existing.getFileId())
+                    .totalChunks(existing.getTotalChunks())
+                    .fileMd5(existing.getFileMd5())
+                    .sseEndpoint("/api/files/" + existing.getFileId() + "/progress")
+                    .statusEndpoint("/api/files/" + existing.getFileId() + "/status")
+                    .build();
+        }
+        
+        // 3. 文件不存在，正常处理
+        log.info("📝 新文件，开始处理: fileName={}, size={}, md5={}", fileName, fileSize, fileMd5);
+        
+        String fileId = UUID.randomUUID().toString();
+
+        // 4. 创建文件记录（状态 = PROCESSING）
         FileRecord record = FileRecord.builder()
                 .fileId(fileId)
                 .userId(userId)
                 .fileName(fileName)
                 .fileSize(fileSize)
+                .fileMd5(fileMd5)
                 .totalChunks(TOTAL_CHUNKS)
                 .status(FileStatus.PROCESSING)
                 .storePath(chunkDir + "/" + fileId)
                 .build();
         fileRecordRepository.save(record);
-        log.info("文件记录已创建: fileId={}, fileName={}, size={}", fileId, fileName, fileSize);
+        log.info("文件记录已创建: fileId={}, fileName={}, size={}, md5={}", fileId, fileName, fileSize, fileMd5);
 
-        // 2. 触发异步处理（不阻塞主线程）
-        processAsync(fileId, fileBytes);
+        // 5. 通过独立 Bean 触发异步处理（解决 @Async 自调用失效问题）
+        asyncProcessor.processAsync(fileId, fileBytes);
 
-        // 3. 立即返回
+        // 6. 立即返回
         return UploadResponse.builder()
                 .fileId(fileId)
                 .totalChunks(TOTAL_CHUNKS)
+                .fileMd5(fileMd5)
                 .sseEndpoint("/api/files/" + fileId + "/progress")
                 .statusEndpoint("/api/files/" + fileId + "/status")
                 .build();
     }
 
     /**
-     * 异步处理：切片 → 并行处理各切片 → 更新文件状态
+     * 计算字节数组的 MD5 值
      */
-    @Async("chunkExecutor")
-    public void processAsync(String fileId, byte[] fileBytes) {
-        log.info("开始异步处理: fileId={}", fileId);
-
-        // 1. 切片
-        List<byte[]> chunks = fileChunker.split(fileBytes, TOTAL_CHUNKS);
-        log.info("切片完成: fileId={}, chunkCount={}", fileId, chunks.size());
-
-        // 2. 提交 10 个切片任务并行处理（@Async 自动提交到 chunkExecutor）
-        @SuppressWarnings("unchecked")
-        CompletableFuture<Void>[] futures = new CompletableFuture[TOTAL_CHUNKS];
-        for (int i = 0; i < TOTAL_CHUNKS; i++) {
-            final int chunkIndex = i;
-            futures[i] = chunkProcessTask.process(
-                    fileId, chunkIndex, chunks.get(chunkIndex), TOTAL_CHUNKS);
+    private String calcMd5(byte[] data) {
+        try {
+            MessageDigest md = MessageDigest.getInstance("MD5");
+            byte[] digest = md.digest(data);
+            return HexFormat.of().formatHex(digest);
+        } catch (NoSuchAlgorithmException e) {
+            throw new RuntimeException("MD5 算法不可用", e);
         }
-
-        // 3. 等待全部完成
-        CompletableFuture.allOf(futures).join();
-        log.info("所有切片处理完成: fileId={}", fileId);
-
-        // 4. 更新文件记录状态并推送完成事件
-        FileRecord record = fileRecordRepository.findByFileId(fileId)
-                .orElseThrow(() -> new RuntimeException("文件记录不存在: " + fileId));
-
-        // 统计
-        long completedCount = futures.length; // 简单 demo，后续迭代细化
-
-        record.setCompletedChunks((int) completedCount);
-        record.setStatus(FileStatus.COMPLETED);
-        fileRecordRepository.save(record);
-
-        // 5. SSE 推送文件完成事件
-        ChunkProgressEvent event = ChunkProgressEvent.builder()
-                .fileId(fileId)
-                .status(FileStatus.COMPLETED.name())
-                .totalChunks(TOTAL_CHUNKS)
-                .completedChunks(TOTAL_CHUNKS)
-                .failedChunks(0)
-                .message("所有切片处理完成")
-                .build();
-        sseRegistry.sendCompleteAndClose(fileId, event);
-        log.info("文件处理全部完成: fileId={}", fileId);
     }
 }

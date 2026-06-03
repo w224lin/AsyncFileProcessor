@@ -38,6 +38,9 @@ public class FileChunk {
     @Builder.Default
     private Long chunkSize = 0L;
 
+    @Column(name = "chunk_md5", length = 32)
+    private String chunkMd5;
+
     @Column(name = "store_path", length = 500)
     private String storePath;
 

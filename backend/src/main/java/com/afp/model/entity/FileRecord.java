@@ -36,6 +36,9 @@ public class FileRecord {
     @Column(name = "file_size", nullable = false)
     private Long fileSize;
 
+    @Column(name = "file_md5", length = 32)
+    private String fileMd5;
+
     @Column(name = "total_chunks", nullable = false)
     @Builder.Default
     private Integer totalChunks = 10;

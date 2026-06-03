@@ -16,6 +16,7 @@ public class UploadResponse {
 
     private String fileId;
     private Integer totalChunks;
+    private String fileMd5;
     private String sseEndpoint;
     private String statusEndpoint;
 }

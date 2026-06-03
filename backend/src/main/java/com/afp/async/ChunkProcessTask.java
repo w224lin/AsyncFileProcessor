@@ -10,6 +10,9 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Component;
 
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.HexFormat;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 
@@ -38,33 +41,44 @@ public class ChunkProcessTask {
         log.info("开始处理切片: fileId={}, chunkIndex={}, chunkId={}", fileId, chunkIndex, chunkId);
 
         try {
-            // 1. 写磁盘
+            // 1. 计算切片 MD5
+            String chunkMd5 = calcMd5(chunkData);
+
+            // 2. 写磁盘
             String storePath = fileStorage.store(fileId, chunkIndex, chunkData);
             log.info("切片写入磁盘完成: chunkIndex={}, path={}", chunkIndex, storePath);
 
-            // 2. 建 DB 记录
+            // 3. 建 DB 记录
             FileChunk chunk = FileChunk.builder()
                     .chunkId(chunkId)
                     .fileId(fileId)
                     .chunkIndex(chunkIndex)
                     .chunkSize((long) chunkData.length)
+                    .chunkMd5(chunkMd5)
                     .storePath(storePath)
                     .status(ChunkStatus.COMPLETED)
                     .build();
             chunkRepository.save(chunk);
-            log.info("切片入库完成: chunkIndex={}", chunkIndex);
+            log.info("切片入库完成: chunkIndex={}, md5={}", chunkIndex, chunkMd5);
 
-            // 3. SSE 推送
+            // ✅ 4. 查询当前已完成和失败的切片数量
+            long completedCount = chunkRepository.countByFileIdAndStatus(fileId, ChunkStatus.COMPLETED);
+            long failedCount = chunkRepository.countByFileIdAndStatus(fileId, ChunkStatus.FAILED);
+
+            // 5. SSE 推送（包含 completedChunks 和 failedChunks）
             ChunkProgressEvent event = ChunkProgressEvent.builder()
                     .fileId(fileId)
                     .chunkId(chunkId)
                     .chunkIndex(chunkIndex)
+                    .chunkMd5(chunkMd5)
                     .status(ChunkStatus.COMPLETED.name())
                     .totalChunks(totalChunks)
+                    .completedChunks((int) completedCount)  // ✅ 新增
+                    .failedChunks((int) failedCount)        // ✅ 新增
                     .message("切片 " + chunkIndex + " 处理完成")
                     .build();
             sseRegistry.send(fileId, event);
-            log.info("SSE 推送完成: chunkIndex={}", chunkIndex);
+            log.info("SSE 推送完成: chunkIndex={}, completed={}/{}", chunkIndex, completedCount, totalChunks);
 
             return CompletableFuture.completedFuture(null);
 
@@ -85,17 +99,36 @@ public class ChunkProcessTask {
                 log.error("失败切片入库也失败: chunkIndex={}", chunkIndex, dbEx);
             }
 
+            // ✅ 查询当前已完成和失败的切片数量
+            long completedCount = chunkRepository.countByFileIdAndStatus(fileId, ChunkStatus.COMPLETED);
+            long failedCount = chunkRepository.countByFileIdAndStatus(fileId, ChunkStatus.FAILED);
+
             ChunkProgressEvent event = ChunkProgressEvent.builder()
                     .fileId(fileId)
                     .chunkId(chunkId)
                     .chunkIndex(chunkIndex)
                     .status(ChunkStatus.FAILED.name())
                     .totalChunks(totalChunks)
+                    .completedChunks((int) completedCount)  // ✅ 新增
+                    .failedChunks((int) failedCount)        // ✅ 新增
                     .message("切片 " + chunkIndex + " 处理失败: " + e.getMessage())
                     .build();
             sseRegistry.sendError(fileId, event);
 
             return CompletableFuture.completedFuture(null);
+        }
+    }
+
+    /**
+     * 计算字节数组的 MD5 值
+     */
+    private String calcMd5(byte[] data) {
+        try {
+            MessageDigest md = MessageDigest.getInstance("MD5");
+            byte[] digest = md.digest(data);
+            return HexFormat.of().formatHex(digest);
+        } catch (NoSuchAlgorithmException e) {
+            throw new RuntimeException("MD5 算法不可用", e);
         }
     }
 }
